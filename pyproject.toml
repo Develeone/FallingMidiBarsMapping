@@ -1,0 +1,13 @@
+[project]
+name = "falling-midi-trainer"
+version = "0.1.0"
+description = "Interactive MIDI trainer with falling bars visualization and MIDI duplication"
+authors = [{ name = "Unknown" }]
+requires-python = ">=3.11"
+dependencies = [
+  "mido",
+  "pygame",
+]
+
+[project.scripts]
+falling-midi-trainer = "falling_midi_trainer.app:main"
