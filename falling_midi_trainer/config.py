@@ -1,4 +1,5 @@
 """Centralized configuration for the MIDI trainer."""
+"""Centralized configuration for the MIDI trainer."""
 
 from __future__ import annotations
 
@@ -15,6 +16,8 @@ VIRTUAL_OUT_NAME = "Python Trainer Out"
 # Visual dimensions
 NOTE_MIN, NOTE_MAX = 21, 108  # Piano range
 WINDOW_WIDTH, WINDOW_HEIGHT = 1100, 650
+FULLSCREEN = True
+SAFE_MARGIN = 18
 FPS = 60
 TOPBAR_HEIGHT = 40
 KEYSTRIP_HEIGHT = 14
@@ -26,13 +29,20 @@ STRICT = False  # False = can press extra notes
 
 # Audio synthesis
 SAMPLE_RATE = 44100
-TONE_DURATION_SEC = 1.0
-TONE_VOLUME = 0.18
+TONE_DURATION_SEC = 2.0
+TONE_VOLUME = 0.2
+REVERB_MIX = 0.35
+REVERB_TIME = 0.85
+REVERB_PREDELAY = 0.02
 
 # Colors
-BACKGROUND_COLOR = (15, 15, 18)
-TOPBAR_BG = (25, 25, 28)
-TOPBAR_BORDER = (45, 45, 50)
+BACKGROUND_COLOR_TOP = (9, 12, 18)
+BACKGROUND_COLOR_BOTTOM = (18, 20, 28)
+BACKGROUND_GRID = (30, 34, 45)
+TOPBAR_BG = (22, 26, 33)
+TOPBAR_BG_ACCENT = (36, 48, 66)
+TOPBAR_BORDER = (70, 88, 118)
+TOPBAR_GLOW = (60, 140, 255)
 
 # Pitch-class color mapping (C D E F G A B) — fully saturated colors
 PITCH_CLASS_COLORS = {
@@ -47,3 +57,7 @@ PITCH_CLASS_COLORS = {
 
 # UI
 FONT_SIZE = 22
+HUD_COLOR = (225, 233, 246)
+MUTED_TEXT = (165, 175, 189)
+HIT_LINE_COLOR = (240, 248, 255)
+NOTE_BORDER_COLOR = (10, 10, 14)
