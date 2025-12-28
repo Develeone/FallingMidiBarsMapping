@@ -11,7 +11,6 @@ import threading
 
 from falling_midi_trainer import config
 from falling_midi_trainer.audio.piano import make_piano_tone
-from falling_midi_trainer.audio.sine import make_sine_tone
 from falling_midi_trainer.game.state import GameState
 from falling_midi_trainer.midi.files import list_midi_files
 from falling_midi_trainer.midi.parsing import group_chords, parse_notes
@@ -42,7 +41,6 @@ class TrainerApp:
         self.reverb_mix = config.REVERB_MIX
         self.reverb_rect = pygame.Rect(0, 0, 0, 0)
         self.tone_cache: Dict[tuple[int, float], pygame.mixer.Sound] = {}
-        self.sine_cache: Dict[int, pygame.mixer.Sound] = {}
         self._tone_lock = threading.Lock()
         self._pending_tones: Set[tuple[int, float]] = set()
         self._start_warmup_thread()
@@ -359,36 +357,16 @@ class TrainerApp:
                     self.tone_cache[key] = tone
                 self._pending_tones.discard(key)
 
-    def _queue_tone_generation(self, note: int, key: tuple[int, float]) -> None:
-        with self._tone_lock:
-            if key in self.tone_cache or key in self._pending_tones:
-                return
-            self._pending_tones.add(key)
-
-        def _worker() -> None:
-            try:
-                tone = make_piano_tone(note, reverb_mix=key[1])
-            except Exception:
-                with self._tone_lock:
-                    self._pending_tones.discard(key)
-                return
-            with self._tone_lock:
-                if round(self.reverb_mix, 2) == key[1]:
-                    self.tone_cache[key] = tone
-                self._pending_tones.discard(key)
-
-        threading.Thread(target=_worker, daemon=True).start()
-
     def _get_tone(self, note: int) -> pygame.mixer.Sound:
         tone_key = (note, round(self.reverb_mix, 2))
         with self._tone_lock:
             if tone_key in self.tone_cache:
                 return self.tone_cache[tone_key]
 
-        self._queue_tone_generation(note, tone_key)
-        if note not in self.sine_cache:
-            self.sine_cache[note] = make_sine_tone(note, sec=0.5, vol=config.TONE_VOLUME * 0.8)
-        return self.sine_cache[note]
+        tone = make_piano_tone(note, reverb_mix=tone_key[1])
+        with self._tone_lock:
+            self.tone_cache[tone_key] = tone
+        return tone
 
 
 if __name__ == "__main__":
