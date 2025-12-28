@@ -1,5 +1,4 @@
 """Centralized configuration for the MIDI trainer."""
-"""Centralized configuration for the MIDI trainer."""
 
 from __future__ import annotations
 
