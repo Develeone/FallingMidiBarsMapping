@@ -5,9 +5,11 @@ from __future__ import annotations
 import os
 from typing import Dict, Set
 
+import threading
+from queue import Empty, SimpleQueue
+
 import mido
 import pygame
-import threading
 
 from falling_midi_trainer import config
 from falling_midi_trainer.audio.piano import make_piano_tone
@@ -45,12 +47,13 @@ class TrainerApp:
         self._pending_tones: Set[tuple[int, float]] = set()
         self._start_warmup_thread()
         self.note_channels: Dict[int, pygame.mixer.Channel] = {}
+        self._midi_queue: SimpleQueue[mido.Message] = SimpleQueue()
 
         self.internal_enabled = True
         self.midi_out_enabled = True
 
         self.midi_in_name = pick_midi_input()
-        self.inport = mido.open_input(self.midi_in_name)
+        self.inport = mido.open_input(self.midi_in_name, callback=self._handle_midi_message)
 
         self.midi_out_name: str | None = None
         self.outport: mido.ports.BaseOutput | None = None
@@ -103,12 +106,11 @@ class TrainerApp:
         self._cleanup()
 
     def _process_midi(self) -> None:
-        for msg in self.inport.iter_pending():
-            if self.outport is not None and self.midi_out_enabled:
-                try:
-                    self.outport.send(msg)
-                except Exception:
-                    pass
+        while True:
+            try:
+                msg = self._midi_queue.get_nowait()
+            except Empty:
+                break
 
             if msg.type == "note_on" and msg.velocity > 0:
                 self.pressed.add(msg.note)
@@ -122,6 +124,15 @@ class TrainerApp:
                 channel = self.note_channels.pop(msg.note, None)
                 if channel is not None:
                     channel.fadeout(25)
+
+    def _handle_midi_message(self, msg: mido.Message) -> None:
+        if self.outport is not None and self.midi_out_enabled:
+            try:
+                self.outport.send(msg)
+            except Exception:
+                pass
+
+        self._midi_queue.put(msg)
 
     def _process_events(self) -> bool:
         for event in pygame.event.get():
