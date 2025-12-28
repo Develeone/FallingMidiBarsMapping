@@ -46,12 +46,16 @@ class TrainerApp:
         self._start_warmup_thread()
         self.note_channels: Dict[int, pygame.mixer.Channel] = {}
 
+        self.internal_enabled = True
+        self.midi_out_enabled = True
+
         self.midi_in_name = pick_midi_input()
         self.inport = mido.open_input(self.midi_in_name)
 
         self.midi_out_name: str | None = None
         self.outport: mido.ports.BaseOutput | None = None
         self._setup_midi_out()
+        self.midi_out_enabled = self.outport is not None
 
         files = list_midi_files(config.MIDI_DIR)
         self.state = GameState(files)
@@ -100,7 +104,7 @@ class TrainerApp:
 
     def _process_midi(self) -> None:
         for msg in self.inport.iter_pending():
-            if self.outport is not None:
+            if self.outport is not None and self.midi_out_enabled:
                 try:
                     self.outport.send(msg)
                 except Exception:
@@ -108,7 +112,7 @@ class TrainerApp:
 
             if msg.type == "note_on" and msg.velocity > 0:
                 self.pressed.add(msg.note)
-                if msg.note not in self.note_channels:
+                if msg.note not in self.note_channels and self.internal_enabled:
                     channel = pygame.mixer.find_channel(True)
                     self.note_channels[msg.note] = channel
                     tone = self._get_tone(msg.note)
@@ -149,7 +153,7 @@ class TrainerApp:
         if my > config.TOPBAR_HEIGHT:
             return False
 
-        chips, left_btn, right_btn, reverb_rect = draw_topbar(
+        chips, left_btn, right_btn, reverb_rect, internal_btn, midi_btn = draw_topbar(
             self.screen,
             self.font,
             self.state.files,
@@ -158,6 +162,8 @@ class TrainerApp:
             self.state.track_idx,
             self.state.track_count,
             self.reverb_mix,
+            self.internal_enabled,
+            self.midi_out_enabled,
         )
 
         for rect, idx in chips:
@@ -178,6 +184,12 @@ class TrainerApp:
         if right_btn.collidepoint(mx, my) and self.state.track_count:
             self.state.next_track()
             return True
+        if internal_btn.collidepoint(mx, my):
+            self._toggle_internal_synth()
+            return True
+        if midi_btn.collidepoint(mx, my):
+            self._toggle_midi_out()
+            return True
         if reverb_rect.collidepoint(mx, my):
             rel = (mx - reverb_rect.x) / max(1, reverb_rect.w)
             self._set_reverb_mix(rel)
@@ -193,6 +205,19 @@ class TrainerApp:
             self.tone_cache.clear()
             self._pending_tones.clear()
         self._start_warmup_thread()
+
+    def _toggle_internal_synth(self) -> None:
+        self.internal_enabled = not self.internal_enabled
+        if not self.internal_enabled:
+            for channel in self.note_channels.values():
+                channel.fadeout(25)
+            self.note_channels.clear()
+
+    def _toggle_midi_out(self) -> None:
+        if self.outport is None:
+            self.midi_out_enabled = False
+            return
+        self.midi_out_enabled = not self.midi_out_enabled
 
     def _update_game_time(self, dt: float) -> None:
         if self.state.chord_idx < len(self.state.chords):
@@ -219,7 +244,7 @@ class TrainerApp:
 
     def _draw(self) -> None:
         self._draw_background()
-        chips, left_btn, right_btn, reverb_rect = draw_topbar(
+        chips, left_btn, right_btn, reverb_rect, internal_btn, midi_btn = draw_topbar(
             self.screen,
             self.font,
             self.state.files,
@@ -228,9 +253,11 @@ class TrainerApp:
             self.state.track_idx,
             self.state.track_count,
             self.reverb_mix,
+            self.internal_enabled,
+            self.midi_out_enabled,
         )
         self.reverb_rect = reverb_rect
-        _ = (chips, left_btn, right_btn)
+        _ = (chips, left_btn, right_btn, internal_btn, midi_btn)
 
         view_start = self.state.game_time
         visible_height = config.WINDOW_HEIGHT - config.KEYSTRIP_HEIGHT - config.TOPBAR_HEIGHT
@@ -285,7 +312,9 @@ class TrainerApp:
         base_name = os.path.basename(self.state.current_path) if self.state.current_path else "-"
         info_text = (
             f"{status} • {base_name} • Track {self.state.track_idx + 1}/{self.state.track_count or 0} • "
-            f"MIDI IN: {self.midi_in_name} • MIDI OUT: {self.midi_out_name or 'None'}"
+            f"MIDI IN: {self.midi_in_name} • "
+            f"Internal: {'On' if self.internal_enabled else 'Off'} • "
+            f"MIDI OUT: {self.midi_out_name or 'None'} ({'On' if self.midi_out_enabled and self.outport else 'Off'})"
         )
         self.screen.blit(self.font.render(info_text, True, config.HUD_COLOR), (16, config.TOPBAR_HEIGHT + 12))
 

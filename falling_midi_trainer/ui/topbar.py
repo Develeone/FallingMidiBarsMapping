@@ -22,7 +22,9 @@ def draw_topbar(
     track_idx: int,
     track_count: int,
     reverb_mix: float,
-) -> tuple[list[ChipInfo], pygame.Rect, pygame.Rect, pygame.Rect]:
+    internal_enabled: bool,
+    midi_out_enabled: bool,
+) -> tuple[list[ChipInfo], pygame.Rect, pygame.Rect, pygame.Rect, pygame.Rect, pygame.Rect]:
     """Draw the topbar and return hit targets for interaction."""
 
     screen_width = config.WINDOW_WIDTH
@@ -76,7 +78,76 @@ def draw_topbar(
     pygame.draw.rect(screen, (210, 230, 255), knob_rect, border_radius=6)
     screen.blit(font.render("Reverb", True, (220, 230, 240)), (slider_x, slider_y - 18))
 
-    x_pos = 12 - scroll_x
+    def draw_toggle(rect: pygame.Rect, enabled: bool, icon: str) -> None:
+        bg_color = (64, 82, 110) if enabled else (42, 52, 70)
+        border_color = (110, 150, 210) if enabled else (80, 92, 110)
+        icon_color = (235, 242, 250) if enabled else (170, 178, 192)
+
+        pygame.draw.rect(screen, bg_color, rect, border_radius=9)
+        pygame.draw.rect(screen, border_color, rect, 1, border_radius=9)
+
+        if icon == "speaker":
+            points = [
+                (rect.x + 7, rect.centery - 8),
+                (rect.x + 14, rect.centery - 8),
+                (rect.x + 20, rect.centery - 13),
+                (rect.x + 20, rect.centery + 13),
+                (rect.x + 14, rect.centery + 8),
+                (rect.x + 7, rect.centery + 8),
+            ]
+            pygame.draw.polygon(screen, icon_color, points)
+            if enabled:
+                pygame.draw.arc(
+                    screen,
+                    icon_color,
+                    pygame.Rect(rect.x + 18, rect.centery - 11, 12, 22),
+                    -0.8,
+                    0.8,
+                    2,
+                )
+                pygame.draw.arc(
+                    screen,
+                    icon_color,
+                    pygame.Rect(rect.x + 20, rect.centery - 16, 16, 32),
+                    -0.7,
+                    0.7,
+                    2,
+                )
+            else:
+                pygame.draw.line(
+                    screen, icon_color, (rect.x + 10, rect.y + 8), (rect.right - 8, rect.bottom - 8), 3
+                )
+                pygame.draw.line(
+                    screen, icon_color, (rect.x + 10, rect.bottom - 8), (rect.right - 8, rect.y + 8), 3
+                )
+        elif icon == "cable":
+            plug_body = pygame.Rect(rect.x + 8, rect.centery - 8, 14, 16)
+            pygame.draw.rect(screen, icon_color, plug_body, border_radius=3)
+            pygame.draw.rect(screen, icon_color, pygame.Rect(rect.x + 10, rect.centery - 11, 10, 4), border_radius=2)
+            pygame.draw.rect(screen, icon_color, pygame.Rect(rect.x + 10, rect.centery + 7, 10, 4), border_radius=2)
+            if enabled:
+                pygame.draw.line(screen, icon_color, (plug_body.right, rect.centery), (rect.right - 10, rect.centery), 3)
+                pygame.draw.polygon(
+                    screen,
+                    icon_color,
+                    [
+                        (rect.right - 10, rect.centery - 6),
+                        (rect.right - 4, rect.centery),
+                        (rect.right - 10, rect.centery + 6),
+                    ],
+                )
+            else:
+                pygame.draw.line(screen, icon_color, (rect.x + 6, rect.y + 6), (rect.right - 6, rect.bottom - 6), 3)
+                pygame.draw.line(screen, icon_color, (rect.x + 6, rect.bottom - 6), (rect.right - 6, rect.y + 6), 3)
+
+    button_size = 34
+    button_y = (config.TOPBAR_HEIGHT - button_size) // 2
+    internal_btn = pygame.Rect(12, button_y, button_size, button_size)
+    midi_btn = pygame.Rect(internal_btn.right + 10, button_y, button_size, button_size)
+    draw_toggle(internal_btn, internal_enabled, "speaker")
+    draw_toggle(midi_btn, midi_out_enabled, "cable")
+
+    x_pos = midi_btn.right + 12 - scroll_x
     chips: list[ChipInfo] = []
     max_x = slider_x - 12
 
@@ -103,4 +174,4 @@ def draw_topbar(
         chips.append((rect, index))
         x_pos += width + 8
 
-    return chips, left_btn, right_btn, slider_rect
+    return chips, left_btn, right_btn, slider_rect, internal_btn, midi_btn
