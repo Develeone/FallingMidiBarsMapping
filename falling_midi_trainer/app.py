@@ -9,7 +9,7 @@ import mido
 import pygame
 
 from falling_midi_trainer import config
-from falling_midi_trainer.audio.sine import make_sine_tone
+from falling_midi_trainer.audio.piano import make_piano_tone
 from falling_midi_trainer.game.state import GameState
 from falling_midi_trainer.midi.files import list_midi_files
 from falling_midi_trainer.midi.parsing import group_chords, parse_notes
@@ -25,7 +25,11 @@ class TrainerApp:
         pygame.mixer.init()
         pygame.mixer.set_num_channels(64)
 
-        self.screen = pygame.display.set_mode((config.WINDOW_WIDTH, config.WINDOW_HEIGHT))
+        display_info = pygame.display.Info()
+        target_size = (display_info.current_w, display_info.current_h)
+        flags = pygame.FULLSCREEN | pygame.SCALED if config.FULLSCREEN else pygame.RESIZABLE
+        self.screen = pygame.display.set_mode(target_size, flags)
+        config.WINDOW_WIDTH, config.WINDOW_HEIGHT = self.screen.get_size()
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont(None, config.FONT_SIZE)
 
@@ -33,7 +37,7 @@ class TrainerApp:
         self.key_width = config.WINDOW_WIDTH / self.key_count
 
         self.pressed: Set[int] = set()
-        self.tone_cache: Dict[int, pygame.mixer.Sound] = {}
+        self.tone_cache: Dict[tuple[int, float], pygame.mixer.Sound] = {}
         self.note_channels: Dict[int, pygame.mixer.Channel] = {}
 
         self.midi_in_name = pick_midi_input()
@@ -42,6 +46,9 @@ class TrainerApp:
         self.midi_out_name: str | None = None
         self.outport: mido.ports.BaseOutput | None = None
         self._setup_midi_out()
+
+        self.reverb_mix = config.REVERB_MIX
+        self.reverb_rect = pygame.Rect(0, 0, 0, 0)
 
         files = list_midi_files(config.MIDI_DIR)
         self.state = GameState(files)
@@ -99,11 +106,12 @@ class TrainerApp:
             if msg.type == "note_on" and msg.velocity > 0:
                 self.pressed.add(msg.note)
                 if msg.note not in self.note_channels:
-                    if msg.note not in self.tone_cache:
-                        self.tone_cache[msg.note] = make_sine_tone(msg.note)
+                    tone_key = (msg.note, round(self.reverb_mix, 2))
+                    if tone_key not in self.tone_cache:
+                        self.tone_cache[tone_key] = make_piano_tone(msg.note, reverb_mix=self.reverb_mix)
                     channel = pygame.mixer.find_channel(True)
                     self.note_channels[msg.note] = channel
-                    channel.play(self.tone_cache[msg.note], loops=-1, fade_ms=8)
+                    channel.play(self.tone_cache[tone_key], loops=-1, fade_ms=8)
             elif msg.type in ("note_off", "note_on") and (msg.type == "note_off" or getattr(msg, "velocity", 0) == 0):
                 self.pressed.discard(msg.note)
                 channel = self.note_channels.pop(msg.note, None)
@@ -119,11 +127,17 @@ class TrainerApp:
                     self.state.file_scroll_x = max(0, self.state.file_scroll_x - int(event.y * 60))
                 else:
                     self.state.file_scroll_x = max(0, self.state.file_scroll_x - int(event.x * 60))
+                if self.reverb_rect.collidepoint(pygame.mouse.get_pos()):
+                    self._nudge_reverb(event.y * 0.02)
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_LEFTBRACKET and self.state.track_count:
                     self.state.previous_track()
                 elif event.key == pygame.K_RIGHTBRACKET and self.state.track_count:
                     self.state.next_track()
+                elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
+                    self._nudge_reverb(-0.05)
+                elif event.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
+                    self._nudge_reverb(0.05)
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if self._handle_topbar_click(event.pos):
                     continue
@@ -134,7 +148,7 @@ class TrainerApp:
         if my > config.TOPBAR_HEIGHT:
             return False
 
-        chips, left_btn, right_btn = draw_topbar(
+        chips, left_btn, right_btn, reverb_rect = draw_topbar(
             self.screen,
             self.font,
             self.state.files,
@@ -142,6 +156,7 @@ class TrainerApp:
             self.state.file_scroll_x,
             self.state.track_idx,
             self.state.track_count,
+            self.reverb_mix,
         )
 
         for rect, idx in chips:
@@ -162,7 +177,18 @@ class TrainerApp:
         if right_btn.collidepoint(mx, my) and self.state.track_count:
             self.state.next_track()
             return True
+        if reverb_rect.collidepoint(mx, my):
+            rel = (mx - reverb_rect.x) / max(1, reverb_rect.w)
+            self._set_reverb_mix(rel)
+            return True
         return False
+
+    def _nudge_reverb(self, delta: float) -> None:
+        self._set_reverb_mix(self.reverb_mix + delta)
+
+    def _set_reverb_mix(self, value: float) -> None:
+        self.reverb_mix = clamp(value, 0.0, 1.0)
+        self.tone_cache.clear()
 
     def _update_game_time(self, dt: float) -> None:
         if self.state.chord_idx < len(self.state.chords):
@@ -188,8 +214,8 @@ class TrainerApp:
             self.state.game_time += dt
 
     def _draw(self) -> None:
-        self.screen.fill(config.BACKGROUND_COLOR)
-        chips, left_btn, right_btn = draw_topbar(
+        self._draw_background()
+        chips, left_btn, right_btn, reverb_rect = draw_topbar(
             self.screen,
             self.font,
             self.state.files,
@@ -197,8 +223,10 @@ class TrainerApp:
             self.state.file_scroll_x,
             self.state.track_idx,
             self.state.track_count,
+            self.reverb_mix,
         )
-        _ = (chips, left_btn, right_btn)  # appease linters for unused variables when drawing only
+        self.reverb_rect = reverb_rect
+        _ = (chips, left_btn, right_btn)
 
         view_start = self.state.game_time
         visible_height = config.WINDOW_HEIGHT - config.KEYSTRIP_HEIGHT - config.TOPBAR_HEIGHT
@@ -225,32 +253,74 @@ class TrainerApp:
                 width = max(2, int((velocity / 127) * self.key_width))
                 x_offset = (self.key_width - width) * 0.5
 
-                pygame.draw.rect(self.screen, color, pygame.Rect(x + x_offset, y_top, width - 1, height))
+                note_rect = pygame.Rect(x + x_offset, y_top, width - 1, height)
+                pygame.draw.rect(self.screen, color, note_rect, border_radius=6)
+                pygame.draw.rect(self.screen, config.NOTE_BORDER_COLOR, note_rect, 1, border_radius=6)
 
         hit_line_y = (config.WINDOW_HEIGHT - config.KEYSTRIP_HEIGHT) - 2
-        pygame.draw.line(self.screen, (255, 255, 255), (0, hit_line_y), (config.WINDOW_WIDTH, hit_line_y), 2)
+        pygame.draw.line(
+            self.screen,
+            config.HIT_LINE_COLOR,
+            (config.SAFE_MARGIN, hit_line_y),
+            (config.WINDOW_WIDTH - config.SAFE_MARGIN, hit_line_y),
+            3,
+        )
 
         key_strip_y = config.WINDOW_HEIGHT - config.KEYSTRIP_HEIGHT
         for note in self.pressed:
             if config.NOTE_MIN <= note <= config.NOTE_MAX:
                 x = (note - config.NOTE_MIN) * self.key_width
                 pygame.draw.rect(
-                    self.screen, (255, 255, 255), pygame.Rect(x, key_strip_y, self.key_width - 1, config.KEYSTRIP_HEIGHT)
+                    self.screen,
+                    (235, 244, 255),
+                    pygame.Rect(x + 1, key_strip_y + 1, self.key_width - 3, config.KEYSTRIP_HEIGHT - 2),
+                    border_radius=3,
                 )
 
         status = "PAUSED (press chord)" if self.state.paused else "PLAYING"
         base_name = os.path.basename(self.state.current_path) if self.state.current_path else "-"
         info_text = (
-            f"{status} | {base_name} | Track {self.state.track_idx + 1}/{self.state.track_count or 0} | "
-            f"MIDI IN: {self.midi_in_name} | MIDI OUT: {self.midi_out_name or 'None'}"
+            f"{status} • {base_name} • Track {self.state.track_idx + 1}/{self.state.track_count or 0} • "
+            f"MIDI IN: {self.midi_in_name} • MIDI OUT: {self.midi_out_name or 'None'}"
         )
-        self.screen.blit(self.font.render(info_text, True, (220, 220, 220)), (12, config.TOPBAR_HEIGHT + 10))
+        self.screen.blit(self.font.render(info_text, True, config.HUD_COLOR), (16, config.TOPBAR_HEIGHT + 12))
 
         if self.state.chord_idx < len(self.state.chords):
             required_notes = sorted({note for (note, _, _, _) in self.state.chords[self.state.chord_idx]})
-            self.screen.blit(self.font.render(f"Need: {required_notes}", True, (220, 220, 220)), (12, config.TOPBAR_HEIGHT + 34))
+            self.screen.blit(
+                self.font.render(f"Next chord: {required_notes}", True, config.MUTED_TEXT),
+                (16, config.TOPBAR_HEIGHT + 38),
+            )
+
+        self.screen.blit(
+            self.font.render(
+                f"Reverb: {int(self.reverb_mix * 100)}%  (scroll or +/-)", True, (180, 205, 232)
+            ),
+            (config.WINDOW_WIDTH - 360, config.WINDOW_HEIGHT - config.KEYSTRIP_HEIGHT - 34),
+        )
+
+        hint_text = "Fullscreen experience • Click files, scroll to pan, +/- to shape the hall"
+        hint_render = self.font.render(hint_text, True, (120, 138, 158))
+        self.screen.blit(hint_render, (16, config.WINDOW_HEIGHT - config.KEYSTRIP_HEIGHT - 32))
 
         pygame.display.flip()
+
+    def _draw_background(self) -> None:
+        top = pygame.Color(*config.BACKGROUND_COLOR_TOP)
+        bottom = pygame.Color(*config.BACKGROUND_COLOR_BOTTOM)
+        for y in range(config.WINDOW_HEIGHT):
+            lerp = y / max(1, config.WINDOW_HEIGHT - 1)
+            r = int(top.r + (bottom.r - top.r) * lerp)
+            g = int(top.g + (bottom.g - top.g) * lerp)
+            b = int(top.b + (bottom.b - top.b) * lerp)
+            pygame.draw.line(self.screen, (r, g, b), (0, y), (config.WINDOW_WIDTH, y))
+
+        spacing = max(42, int(self.key_width * 1.5))
+        grid_color = config.BACKGROUND_GRID
+        for x in range(0, config.WINDOW_WIDTH, spacing):
+            pygame.draw.line(self.screen, grid_color, (x, 0), (x, config.WINDOW_HEIGHT))
+        for y in range(config.TOPBAR_HEIGHT + 20, config.WINDOW_HEIGHT, spacing):
+            pygame.draw.line(self.screen, grid_color, (0, y), (config.WINDOW_WIDTH, y))
 
     def _cleanup(self) -> None:
         self.inport.close()
