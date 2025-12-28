@@ -7,9 +7,11 @@ from typing import Dict, Set
 
 import mido
 import pygame
+import threading
 
 from falling_midi_trainer import config
 from falling_midi_trainer.audio.piano import make_piano_tone
+from falling_midi_trainer.audio.sine import make_sine_tone
 from falling_midi_trainer.game.state import GameState
 from falling_midi_trainer.midi.files import list_midi_files
 from falling_midi_trainer.midi.parsing import group_chords, parse_notes
@@ -20,8 +22,8 @@ from falling_midi_trainer.utils.math_utils import clamp
 
 class TrainerApp:
     def __init__(self) -> None:
-        pygame.init()
         pygame.mixer.pre_init(config.SAMPLE_RATE, size=-16, channels=1, buffer=512)
+        pygame.init()
         pygame.mixer.init()
         pygame.mixer.set_num_channels(64)
 
@@ -37,7 +39,13 @@ class TrainerApp:
         self.key_width = config.WINDOW_WIDTH / self.key_count
 
         self.pressed: Set[int] = set()
+        self.reverb_mix = config.REVERB_MIX
+        self.reverb_rect = pygame.Rect(0, 0, 0, 0)
         self.tone_cache: Dict[tuple[int, float], pygame.mixer.Sound] = {}
+        self.sine_cache: Dict[int, pygame.mixer.Sound] = {}
+        self._tone_lock = threading.Lock()
+        self._pending_tones: Set[tuple[int, float]] = set()
+        self._start_warmup_thread()
         self.note_channels: Dict[int, pygame.mixer.Channel] = {}
 
         self.midi_in_name = pick_midi_input()
@@ -46,9 +54,6 @@ class TrainerApp:
         self.midi_out_name: str | None = None
         self.outport: mido.ports.BaseOutput | None = None
         self._setup_midi_out()
-
-        self.reverb_mix = config.REVERB_MIX
-        self.reverb_rect = pygame.Rect(0, 0, 0, 0)
 
         files = list_midi_files(config.MIDI_DIR)
         self.state = GameState(files)
@@ -106,12 +111,10 @@ class TrainerApp:
             if msg.type == "note_on" and msg.velocity > 0:
                 self.pressed.add(msg.note)
                 if msg.note not in self.note_channels:
-                    tone_key = (msg.note, round(self.reverb_mix, 2))
-                    if tone_key not in self.tone_cache:
-                        self.tone_cache[tone_key] = make_piano_tone(msg.note, reverb_mix=self.reverb_mix)
                     channel = pygame.mixer.find_channel(True)
                     self.note_channels[msg.note] = channel
-                    channel.play(self.tone_cache[tone_key], loops=-1, fade_ms=8)
+                    tone = self._get_tone(msg.note)
+                    channel.play(tone, loops=0, fade_ms=8)
             elif msg.type in ("note_off", "note_on") and (msg.type == "note_off" or getattr(msg, "velocity", 0) == 0):
                 self.pressed.discard(msg.note)
                 channel = self.note_channels.pop(msg.note, None)
@@ -188,7 +191,10 @@ class TrainerApp:
 
     def _set_reverb_mix(self, value: float) -> None:
         self.reverb_mix = clamp(value, 0.0, 1.0)
-        self.tone_cache.clear()
+        with self._tone_lock:
+            self.tone_cache.clear()
+            self._pending_tones.clear()
+        self._start_warmup_thread()
 
     def _update_game_time(self, dt: float) -> None:
         if self.state.chord_idx < len(self.state.chords):
@@ -328,6 +334,61 @@ class TrainerApp:
             self.outport.close()
         pygame.mixer.quit()
         pygame.quit()
+
+    def _start_warmup_thread(self) -> None:
+        threading.Thread(target=self._warmup_tones, daemon=True).start()
+
+    def _warmup_tones(self) -> None:
+        tone_key_mix = round(self.reverb_mix, 2)
+        center = (config.NOTE_MIN + config.NOTE_MAX) // 2
+        notes = sorted(range(config.NOTE_MIN, config.NOTE_MAX + 1), key=lambda n: abs(n - center))
+        for note in notes:
+            key = (note, tone_key_mix)
+            with self._tone_lock:
+                if key in self.tone_cache or key in self._pending_tones:
+                    continue
+                self._pending_tones.add(key)
+            try:
+                tone = make_piano_tone(note, reverb_mix=self.reverb_mix)
+            except Exception:
+                with self._tone_lock:
+                    self._pending_tones.discard(key)
+                continue
+            with self._tone_lock:
+                if round(self.reverb_mix, 2) == tone_key_mix:
+                    self.tone_cache[key] = tone
+                self._pending_tones.discard(key)
+
+    def _queue_tone_generation(self, note: int, key: tuple[int, float]) -> None:
+        with self._tone_lock:
+            if key in self.tone_cache or key in self._pending_tones:
+                return
+            self._pending_tones.add(key)
+
+        def _worker() -> None:
+            try:
+                tone = make_piano_tone(note, reverb_mix=key[1])
+            except Exception:
+                with self._tone_lock:
+                    self._pending_tones.discard(key)
+                return
+            with self._tone_lock:
+                if round(self.reverb_mix, 2) == key[1]:
+                    self.tone_cache[key] = tone
+                self._pending_tones.discard(key)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _get_tone(self, note: int) -> pygame.mixer.Sound:
+        tone_key = (note, round(self.reverb_mix, 2))
+        with self._tone_lock:
+            if tone_key in self.tone_cache:
+                return self.tone_cache[tone_key]
+
+        self._queue_tone_generation(note, tone_key)
+        if note not in self.sine_cache:
+            self.sine_cache[note] = make_sine_tone(note, sec=0.5, vol=config.TONE_VOLUME * 0.8)
+        return self.sine_cache[note]
 
 
 if __name__ == "__main__":
