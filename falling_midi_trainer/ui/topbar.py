@@ -24,7 +24,22 @@ def draw_topbar(
     reverb_mix: float,
     internal_enabled: bool,
     midi_out_enabled: bool,
-) -> tuple[list[ChipInfo], pygame.Rect, pygame.Rect, pygame.Rect, pygame.Rect, pygame.Rect]:
+    midi_in_name: str,
+    midi_out_name: str | None,
+    midi_inputs: list[str],
+    midi_outputs: list[str],
+) -> tuple[
+    list[ChipInfo],
+    pygame.Rect,
+    pygame.Rect,
+    pygame.Rect,
+    pygame.Rect,
+    pygame.Rect,
+    pygame.Rect,
+    pygame.Rect,
+    pygame.Rect,
+    pygame.Rect,
+]:
     """Draw the topbar and return hit targets for interaction."""
 
     screen_width = config.WINDOW_WIDTH
@@ -62,6 +77,30 @@ def draw_topbar(
 
     label = f"Track: {track_idx + 1}/{track_count}" if track_count else "Track: -"
     screen.blit(font.render(label, True, (230, 230, 235)), (selector_x + 52, selector_y + 8))
+
+    def draw_selector(x: int, title: str, value: str, available: list[str]) -> tuple[pygame.Rect, pygame.Rect, pygame.Rect]:
+        width = 200
+        height = selector_height
+        rect = pygame.Rect(x, selector_y, width, height)
+
+        pygame.draw.rect(screen, (42, 52, 70), rect, border_radius=10)
+        pygame.draw.rect(screen, (86, 108, 140), rect, 2, border_radius=10)
+
+        left = pygame.Rect(rect.x + 10, rect.y + 6, button_width, rect.height - 12)
+        right = pygame.Rect(rect.right - button_width - 10, rect.y + 6, button_width, rect.height - 12)
+        pygame.draw.rect(screen, (60, 76, 98), left, border_radius=8)
+        pygame.draw.rect(screen, (60, 76, 98), right, border_radius=8)
+
+        text_color = (230, 230, 235) if available else (140, 150, 160)
+        screen.blit(font.render("<", True, text_color), (left.x + 9, left.y + 2))
+        screen.blit(font.render(">", True, text_color), (right.x + 9, right.y + 2))
+
+        title_render = font.render(title, True, (190, 205, 220))
+        value_render = font.render(value or "-", True, text_color)
+        screen.blit(title_render, (rect.x + 52, rect.y + 4))
+        screen.blit(value_render, (rect.x + 52, rect.y + 20))
+
+        return rect, left, right
 
     # Reverb slider
     slider_width = 180
@@ -147,7 +186,13 @@ def draw_topbar(
     draw_toggle(internal_btn, internal_enabled, "speaker")
     draw_toggle(midi_btn, midi_out_enabled, "cable")
 
-    x_pos = midi_btn.right + 12 - scroll_x
+    midi_in_rect, midi_in_left, midi_in_right = draw_selector(midi_btn.right + 12, "MIDI In", midi_in_name, midi_inputs)
+    midi_out_label = midi_out_name or "None"
+    midi_out_rect, midi_out_left, midi_out_right = draw_selector(
+        midi_in_rect.right + 12, "MIDI Out", midi_out_label, midi_outputs
+    )
+
+    x_pos = midi_out_rect.right + 12 - scroll_x
     chips: list[ChipInfo] = []
     max_x = slider_x - 12
 
@@ -174,4 +219,15 @@ def draw_topbar(
         chips.append((rect, index))
         x_pos += width + 8
 
-    return chips, left_btn, right_btn, slider_rect, internal_btn, midi_btn
+    return (
+        chips,
+        left_btn,
+        right_btn,
+        slider_rect,
+        internal_btn,
+        midi_btn,
+        midi_in_left,
+        midi_in_right,
+        midi_out_left,
+        midi_out_right,
+    )
