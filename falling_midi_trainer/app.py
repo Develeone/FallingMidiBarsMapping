@@ -52,11 +52,17 @@ class TrainerApp:
         self.internal_enabled = True
         self.midi_out_enabled = True
 
+        self.midi_inputs = mido.get_input_names()
         self.midi_in_name = pick_midi_input()
+        if self.midi_in_name not in self.midi_inputs:
+            self.midi_inputs.insert(0, self.midi_in_name)
         self.inport = mido.open_input(self.midi_in_name, callback=self._handle_midi_message)
 
         self.midi_out_name: str | None = None
         self.outport: mido.ports.BaseOutput | None = None
+        self.midi_outputs = mido.get_output_names()
+        if config.VIRTUAL_OUT and config.VIRTUAL_OUT_NAME not in self.midi_outputs:
+            self.midi_outputs.insert(0, config.VIRTUAL_OUT_NAME)
         self._setup_midi_out()
         self.midi_out_enabled = self.outport is not None
 
@@ -77,6 +83,8 @@ class TrainerApp:
             self.midi_out_name = pick_midi_output()
             if self.midi_out_name:
                 self.outport = mido.open_output(self.midi_out_name)
+        if self.midi_out_name and self.midi_out_name not in self.midi_outputs:
+            self.midi_outputs.insert(0, self.midi_out_name)
 
     def _initial_load(self) -> None:
         try:
@@ -164,7 +172,18 @@ class TrainerApp:
         if my > config.TOPBAR_HEIGHT:
             return False
 
-        chips, left_btn, right_btn, reverb_rect, internal_btn, midi_btn = draw_topbar(
+        (
+            chips,
+            left_btn,
+            right_btn,
+            reverb_rect,
+            internal_btn,
+            midi_btn,
+            midi_in_left,
+            midi_in_right,
+            midi_out_left,
+            midi_out_right,
+        ) = draw_topbar(
             self.screen,
             self.font,
             self.state.files,
@@ -175,6 +194,10 @@ class TrainerApp:
             self.reverb_mix,
             self.internal_enabled,
             self.midi_out_enabled,
+            self.midi_in_name,
+            self.midi_out_name,
+            self.midi_inputs,
+            self.midi_outputs,
         )
 
         for rect, idx in chips:
@@ -200,6 +223,18 @@ class TrainerApp:
             return True
         if midi_btn.collidepoint(mx, my):
             self._toggle_midi_out()
+            return True
+        if midi_in_left.collidepoint(mx, my):
+            self._cycle_midi_input(-1)
+            return True
+        if midi_in_right.collidepoint(mx, my):
+            self._cycle_midi_input(1)
+            return True
+        if midi_out_left.collidepoint(mx, my):
+            self._cycle_midi_output(-1)
+            return True
+        if midi_out_right.collidepoint(mx, my):
+            self._cycle_midi_output(1)
             return True
         if reverb_rect.collidepoint(mx, my):
             rel = (mx - reverb_rect.x) / max(1, reverb_rect.w)
@@ -255,7 +290,18 @@ class TrainerApp:
 
     def _draw(self) -> None:
         self._draw_background()
-        chips, left_btn, right_btn, reverb_rect, internal_btn, midi_btn = draw_topbar(
+        (
+            chips,
+            left_btn,
+            right_btn,
+            reverb_rect,
+            internal_btn,
+            midi_btn,
+            midi_in_left,
+            midi_in_right,
+            midi_out_left,
+            midi_out_right,
+        ) = draw_topbar(
             self.screen,
             self.font,
             self.state.files,
@@ -266,9 +312,13 @@ class TrainerApp:
             self.reverb_mix,
             self.internal_enabled,
             self.midi_out_enabled,
+            self.midi_in_name,
+            self.midi_out_name,
+            self.midi_inputs,
+            self.midi_outputs,
         )
         self.reverb_rect = reverb_rect
-        _ = (chips, left_btn, right_btn, internal_btn, midi_btn)
+        _ = (chips, left_btn, right_btn, internal_btn, midi_btn, midi_in_left, midi_in_right, midi_out_left, midi_out_right)
 
         view_start = self.state.game_time
         visible_height = config.WINDOW_HEIGHT - config.KEYSTRIP_HEIGHT - config.TOPBAR_HEIGHT
@@ -372,6 +422,51 @@ class TrainerApp:
             self.outport.close()
         pygame.mixer.quit()
         pygame.quit()
+
+    def _cycle_midi_input(self, direction: int) -> None:
+        if not self.midi_inputs:
+            return
+        try:
+            current_idx = self.midi_inputs.index(self.midi_in_name)
+        except ValueError:
+            current_idx = 0
+            self.midi_in_name = self.midi_inputs[0]
+
+        new_idx = (current_idx + direction) % len(self.midi_inputs)
+        if self.inport:
+            self.inport.close()
+        self.midi_in_name = self.midi_inputs[new_idx]
+        self.inport = mido.open_input(self.midi_in_name, callback=self._handle_midi_message)
+
+    def _cycle_midi_output(self, direction: int) -> None:
+        available = self.midi_outputs[:] if self.midi_outputs else ([] if self.midi_out_name is None else [self.midi_out_name])
+        if not available:
+            self.outport = None
+            self.midi_out_enabled = False
+            return
+
+        try:
+            current_idx = available.index(self.midi_out_name)
+        except ValueError:
+            current_idx = 0
+            self.midi_out_name = available[0]
+
+        new_idx = (current_idx + direction) % len(available)
+        new_name = available[new_idx]
+        if self.outport is not None:
+            self.outport.close()
+        self.outport = None
+        self.midi_out_name = new_name
+
+        try:
+            self.outport = mido.open_output(
+                self.midi_out_name,
+                virtual=config.VIRTUAL_OUT and self.midi_out_name == config.VIRTUAL_OUT_NAME,
+            )
+        except Exception:
+            self.outport = None
+
+        self.midi_out_enabled = self.outport is not None
 
     def _start_warmup_thread(self) -> None:
         threading.Thread(target=self._warmup_tones, daemon=True).start()
