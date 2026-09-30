@@ -1,0 +1,3 @@
+__pycache__/
+*.egg-info/
+.trainer_state.json

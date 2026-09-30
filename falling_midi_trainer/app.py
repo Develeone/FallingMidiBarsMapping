@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
+import subprocess
 from typing import Dict, Set
 
 import threading
@@ -37,7 +40,10 @@ class TrainerApp:
         self.font = pygame.font.SysFont(None, config.FONT_SIZE)
 
         self.key_count = config.NOTE_MAX - config.NOTE_MIN + 1
+        self.keyboard_zoom = 1.0
+        self.keyboard_pan_x = 0.0
         self.key_width = config.WINDOW_WIDTH / self.key_count
+        self._load_ui_state()
 
         self.pressed: Set[int] = set()
         self.reverb_mix = config.REVERB_MIX
@@ -108,8 +114,6 @@ class TrainerApp:
             running = self._process_events()
             self._update_game_time(dt)
             self._draw()
-            if self.state.total_length and self.state.game_time > self.state.total_length + 2:
-                running = False
 
         self._cleanup()
 
@@ -147,7 +151,12 @@ class TrainerApp:
             if event.type == pygame.QUIT:
                 return False
             if event.type == pygame.MOUSEWHEEL:
-                if pygame.key.get_mods() & pygame.KMOD_SHIFT:
+                mods = pygame.key.get_mods()
+                if mods & pygame.KMOD_CTRL:
+                    self._nudge_keyboard_zoom(event.y * config.KEYBOARD_ZOOM_STEP)
+                elif mods & pygame.KMOD_ALT:
+                    self._nudge_keyboard_pan(-event.y * config.KEYBOARD_PAN_STEP)
+                elif mods & pygame.KMOD_SHIFT:
                     self.state.file_scroll_x = max(0, self.state.file_scroll_x - int(event.y * 60))
                 else:
                     self.state.file_scroll_x = max(0, self.state.file_scroll_x - int(event.x * 60))
@@ -162,6 +171,20 @@ class TrainerApp:
                     self._nudge_reverb(-0.05)
                 elif event.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
                     self._nudge_reverb(0.05)
+                elif event.key == pygame.K_o:
+                    self._open_file_dialog()
+                elif event.key == pygame.K_LEFT:
+                    self._nudge_keyboard_pan(config.KEYBOARD_PAN_STEP)
+                elif event.key == pygame.K_RIGHT:
+                    self._nudge_keyboard_pan(-config.KEYBOARD_PAN_STEP)
+                elif event.key == pygame.K_COMMA:
+                    self._nudge_keyboard_zoom(-config.KEYBOARD_ZOOM_STEP)
+                elif event.key == pygame.K_PERIOD:
+                    self._nudge_keyboard_zoom(config.KEYBOARD_ZOOM_STEP)
+                elif event.key == pygame.K_0:
+                    self.keyboard_zoom = 1.0
+                    self.keyboard_pan_x = 0.0
+                    self._save_ui_state()
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if self._handle_topbar_click(event.pos):
                     continue
@@ -245,6 +268,35 @@ class TrainerApp:
     def _nudge_reverb(self, delta: float) -> None:
         self._set_reverb_mix(self.reverb_mix + delta)
 
+    def _nudge_keyboard_zoom(self, delta: float) -> None:
+        self.keyboard_zoom = clamp(self.keyboard_zoom + delta, config.KEYBOARD_ZOOM_MIN, config.KEYBOARD_ZOOM_MAX)
+        self._save_ui_state()
+
+    def _nudge_keyboard_pan(self, delta: float) -> None:
+        self.keyboard_pan_x += delta
+        self._save_ui_state()
+
+    def _load_ui_state(self) -> None:
+        try:
+            with open(config.STATE_PATH, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            self.keyboard_zoom = float(data.get('keyboard_zoom', 1.0))
+            self.keyboard_pan_x = float(data.get('keyboard_pan_x', 0.0))
+            self.keyboard_zoom = clamp(self.keyboard_zoom, config.KEYBOARD_ZOOM_MIN, config.KEYBOARD_ZOOM_MAX)
+        except Exception:
+            self.keyboard_zoom = 1.0
+            self.keyboard_pan_x = 0.0
+
+    def _save_ui_state(self) -> None:
+        try:
+            with open(config.STATE_PATH, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'keyboard_zoom': self.keyboard_zoom,
+                    'keyboard_pan_x': self.keyboard_pan_x,
+                }, f)
+        except Exception:
+            pass
+
     def _set_reverb_mix(self, value: float) -> None:
         self.reverb_mix = clamp(value, 0.0, 1.0)
         with self._tone_lock:
@@ -264,6 +316,31 @@ class TrainerApp:
             self.midi_out_enabled = False
             return
         self.midi_out_enabled = not self.midi_out_enabled
+
+    def _open_file_dialog(self) -> None:
+        try:
+            result = subprocess.run(
+                [
+                    "osascript",
+                    "-e",
+                    'POSIX path of (choose file of type {"mid","midi"} with prompt "Choose MIDI file")',
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            path = result.stdout.strip()
+            if not path:
+                return
+            path = os.path.abspath(path)
+            target_dir = os.path.abspath(config.MIDI_DIR)
+            os.makedirs(target_dir, exist_ok=True)
+            target_path = os.path.join(target_dir, os.path.basename(path))
+            if os.path.abspath(path) != target_path:
+                shutil.copy2(path, target_path)
+            self.state.set_file_path(target_path)
+        except Exception:
+            pass
 
     def _update_game_time(self, dt: float) -> None:
         if self.state.chord_idx < len(self.state.chords):
@@ -335,18 +412,32 @@ class TrainerApp:
 
                 draw_start = max(start, view_start)
                 draw_end = min(end, view_end)
-                x = (note - config.NOTE_MIN) * self.key_width
+                scaled_key_width = self.key_width * self.keyboard_zoom
+                x = self.keyboard_pan_x + (note - config.NOTE_MIN) * scaled_key_width
 
                 y_top = config.TOPBAR_HEIGHT + (view_end - draw_end) * config.PIXELS_PER_SEC
                 y_bottom = config.TOPBAR_HEIGHT + (view_end - draw_start) * config.PIXELS_PER_SEC
                 height = max(2, y_bottom - y_top)
 
                 color = config.PITCH_CLASS_COLORS.get(note % 12, (200, 200, 200))
-                width = max(2, int((velocity / 127) * self.key_width))
-                x_offset = (self.key_width - width) * 0.5
+                width = max(2, int((velocity / 127) * scaled_key_width))
+                x_offset = (scaled_key_width - width) * 0.5
 
                 note_rect = pygame.Rect(x + x_offset, y_top, width - 1, height)
                 pygame.draw.rect(self.screen, color, note_rect, border_radius=6)
+
+                if note % 12 in config.ACCIDENTAL_PITCH_CLASSES:
+                    stripe_step = 7
+                    rect_h = max(1, int(note_rect.h))
+                    rect_w = max(1, int(note_rect.w))
+                    pattern = pygame.Surface((rect_w, rect_h), pygame.SRCALPHA)
+                    pattern.fill((0, 0, 0, 10))
+                    for offset in range(-rect_h, rect_w + rect_h, stripe_step):
+                        start = (offset, rect_h)
+                        end = (offset + rect_h, 0)
+                        pygame.draw.line(pattern, (0, 0, 0, 255), start, end, 6)
+                    self.screen.blit(pattern, note_rect.topleft)
+
                 pygame.draw.rect(self.screen, config.NOTE_BORDER_COLOR, note_rect, 1, border_radius=6)
 
         hit_line_y = (config.WINDOW_HEIGHT - config.KEYSTRIP_HEIGHT) - 2
@@ -361,11 +452,12 @@ class TrainerApp:
         key_strip_y = config.WINDOW_HEIGHT - config.KEYSTRIP_HEIGHT
         for note in self.pressed:
             if config.NOTE_MIN <= note <= config.NOTE_MAX:
-                x = (note - config.NOTE_MIN) * self.key_width
+                scaled_key_width = self.key_width * self.keyboard_zoom
+                x = self.keyboard_pan_x + (note - config.NOTE_MIN) * scaled_key_width
                 pygame.draw.rect(
                     self.screen,
                     (235, 244, 255),
-                    pygame.Rect(x + 1, key_strip_y + 1, self.key_width - 3, config.KEYSTRIP_HEIGHT - 2),
+                    pygame.Rect(x + 1, key_strip_y + 1, max(2, scaled_key_width - 3), config.KEYSTRIP_HEIGHT - 2),
                     border_radius=3,
                 )
 
@@ -393,7 +485,7 @@ class TrainerApp:
             (config.WINDOW_WIDTH - 360, config.WINDOW_HEIGHT - config.KEYSTRIP_HEIGHT - 34),
         )
 
-        hint_text = "Fullscreen experience • Click files, scroll to pan, +/- to shape the hall"
+        hint_text = "O=open • ←/→ pan • ,/. zoom • 0 reset"
         hint_render = self.font.render(hint_text, True, (120, 138, 158))
         self.screen.blit(hint_render, (16, config.WINDOW_HEIGHT - config.KEYSTRIP_HEIGHT - 32))
 

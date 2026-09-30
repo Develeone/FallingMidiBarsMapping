@@ -5,11 +5,12 @@ from __future__ import annotations
 # File handling
 MIDI_DIR = "midi"  # Folder with .mid/.midi files
 MIDI_PATH = "song.mid"  # Fallback file if the folder is empty
+STATE_PATH = ".trainer_state.json"
 
 # MIDI device selection
 MIDI_INPUT_NAME_CONTAINS = ""  # First device if empty
-MIDI_OUTPUT_NAME_CONTAINS = ""
-VIRTUAL_OUT = True
+MIDI_OUTPUT_NAME_CONTAINS = "IAC Driver Bus 1"
+VIRTUAL_OUT = False
 VIRTUAL_OUT_NAME = "Python Trainer Out"
 
 # Visual dimensions
@@ -21,6 +22,10 @@ FPS = 60
 TOPBAR_HEIGHT = 40
 KEYSTRIP_HEIGHT = 14
 PIXELS_PER_SEC = 240.0
+KEYBOARD_ZOOM_MIN = 0.4
+KEYBOARD_ZOOM_MAX = 3.0
+KEYBOARD_ZOOM_STEP = 0.08
+KEYBOARD_PAN_STEP = 24
 
 # Gameplay
 HIT_WINDOW_SEC = 0.08
@@ -43,16 +48,22 @@ TOPBAR_BG_ACCENT = (36, 48, 66)
 TOPBAR_BORDER = (70, 88, 118)
 TOPBAR_GLOW = (60, 140, 255)
 
-# Pitch-class color mapping (C D E F G A B) — fully saturated colors
+# Pitch-class color mapping (all 12 semitones)
 PITCH_CLASS_COLORS = {
-    0: (255, 0, 0),  # C - red
-    2: (255, 128, 0),  # D - orange
-    4: (255, 255, 0),  # E - yellow
-    5: (0, 255, 0),  # F - green
-    7: (0, 255, 255),  # G - cyan
-    9: (0, 0, 255),  # A - blue
-    11: (180, 0, 255),  # B - violet
+    0: (255, 0, 0),      # C
+    1: (255, 64, 0),     # C#/Db
+    2: (255, 128, 0),    # D
+    3: (255, 192, 0),    # D#/Eb
+    4: (255, 255, 0),    # E
+    5: (0, 255, 0),      # F
+    6: (0, 255, 128),    # F#/Gb
+    7: (0, 255, 255),    # G
+    8: (0, 128, 255),    # G#/Ab
+    9: (0, 0, 255),      # A
+    10: (96, 0, 255),    # A#/Bb
+    11: (180, 0, 255),   # B
 }
+ACCIDENTAL_PITCH_CLASSES = {1, 3, 6, 8, 10}
 
 # UI
 FONT_SIZE = 22

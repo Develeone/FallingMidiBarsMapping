@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import mido
 
 from falling_midi_trainer import config
@@ -61,4 +62,12 @@ class GameState:
     def select_file(self, index: int) -> None:
         self.selected_file_idx = index
         self.track_idx = int(clamp(self.track_idx, 0, max(0, self.track_count - 1)))
+        self.load_current()
+
+    def set_file_path(self, path: str) -> None:
+        if path not in self.files:
+            self.files.append(path)
+            self.files.sort(key=lambda p: os.path.basename(p).lower())
+        self.selected_file_idx = self.files.index(path)
+        self.track_idx = 0
         self.load_current()
