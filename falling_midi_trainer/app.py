@@ -9,6 +9,7 @@ import signal
 from pathlib import Path
 from functools import lru_cache
 import subprocess
+from bisect import bisect_left
 from typing import Dict, Set
 
 import threading
@@ -62,6 +63,11 @@ class TrainerApp:
         self._pending_tones: Set[tuple[int, float]] = set()
         self.note_channels: Dict[int, pygame.mixer.Channel] = {}
         self._midi_queue: SimpleQueue[mido.Message] = SimpleQueue()
+        self.timeline_stopped = False
+        self.timeline_loop: tuple[float, float] | None = None
+        self.loop_select_y: int | None = None
+        self.loop_select_start: float | None = None
+        self.loop_select_end: float | None = None
 
         self.internal_enabled = config.INTERNAL_SYNTH
         self.midi_out_enabled = True
@@ -173,11 +179,23 @@ class TrainerApp:
                 elif mods & pygame.KMOD_SHIFT:
                     self.state.file_scroll_x = max(0, self.state.file_scroll_x - int(event.y * 60))
                 else:
-                    self.state.file_scroll_x = max(0, self.state.file_scroll_x - int(event.x * 60))
+                    if event.y:
+                        self._scroll_timeline(event.y)
                 if self.reverb_rect.collidepoint(pygame.mouse.get_pos()):
                     self._nudge_reverb(event.y * 0.02)
+            if event.type == pygame.MOUSEBUTTONUP and event.button == 1 and self.loop_select_start is not None:
+                self._finish_loop_selection()
+            if event.type == pygame.MOUSEMOTION and self.loop_select_start is not None:
+                self.loop_select_end = self._time_at_y(event.pos[1])
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_s:
+                if event.key == pygame.K_SPACE:
+                    if self.timeline_stopped:
+                        self.timeline_stopped = False
+                        self.state.paused = False
+                    else:
+                        self.timeline_stopped = True
+                        self.state.paused = True
+                elif event.key == pygame.K_s:
                     self._show_serum()
                 elif event.key == pygame.K_ESCAPE:
                     return False
@@ -213,7 +231,39 @@ class TrainerApp:
                         continue
                 if self._handle_topbar_click(event.pos):
                     continue
+                if event.pos[1] > config.TOPBAR_HEIGHT and event.pos[1] < config.WINDOW_HEIGHT - config.KEYSTRIP_HEIGHT:
+                    self.timeline_stopped = True
+                    self.state.paused = True
+                    self.loop_select_y = event.pos[1]
+                    self.loop_select_start = self._time_at_y(event.pos[1])
+                    self.loop_select_end = self.loop_select_start
+                    continue
         return True
+
+    def _time_at_y(self, y: int) -> float:
+        bottom = config.WINDOW_HEIGHT - config.KEYSTRIP_HEIGHT
+        return clamp(self.state.game_time + (bottom - y) / config.PIXELS_PER_SEC, 0.0, self.state.total_length)
+
+    def _seek(self, when: float) -> None:
+        self.state.game_time = clamp(when, 0.0, self.state.total_length)
+        times = [chord[0][1] for chord in self.state.chords]
+        self.state.chord_idx = bisect_left(times, self.state.game_time)
+        self.state.paused = True
+        self.timeline_stopped = True
+
+    def _scroll_timeline(self, wheel_y: int) -> None:
+        amount = 180 / config.PIXELS_PER_SEC
+        self._seek(self.state.game_time + wheel_y * amount)
+        if self.loop_select_start is not None and self.loop_select_y is not None:
+            self.loop_select_end = self._time_at_y(self.loop_select_y)
+
+    def _finish_loop_selection(self) -> None:
+        start, end = self.loop_select_start, self.loop_select_end
+        self.loop_select_start = self.loop_select_end = None
+        self.loop_select_y = None
+        if start is not None and end is not None and abs(end - start) > 0.08:
+            self.timeline_loop = (min(start, end), max(start, end))
+            self._seek(self.timeline_loop[0])
 
     def _handle_topbar_click(self, position: tuple[int, int]) -> bool:
         mx, my = position
@@ -381,6 +431,8 @@ class TrainerApp:
             pass
 
     def _update_game_time(self, dt: float) -> None:
+        if getattr(self, "timeline_stopped", False):
+            return
         if self.state.chord_idx < len(self.state.chords):
             current_chord = self.state.chords[self.state.chord_idx]
             required_notes = self.state.required_notes(current_chord)
@@ -404,6 +456,10 @@ class TrainerApp:
 
         if not self.state.paused:
             self.state.game_time += dt
+            if getattr(self, "timeline_loop", None) and self.state.game_time >= self.timeline_loop[1]:
+                self._seek(self.timeline_loop[0])
+                self.timeline_stopped = False
+                self.state.paused = False
 
     def _draw(self) -> None:
         self._draw_background()
@@ -441,6 +497,19 @@ class TrainerApp:
         visible_height = config.WINDOW_HEIGHT - config.KEYSTRIP_HEIGHT - config.TOPBAR_HEIGHT
         lookahead_sec = visible_height / config.PIXELS_PER_SEC
         view_end = self.state.game_time + lookahead_sec
+
+        selection = (self.timeline_loop if self.timeline_loop else None)
+        if self.loop_select_start is not None and self.loop_select_end is not None:
+            selection = (min(self.loop_select_start, self.loop_select_end),
+                         max(self.loop_select_start, self.loop_select_end))
+        if selection and selection[1] > view_start and selection[0] < view_end:
+            top = config.TOPBAR_HEIGHT + (view_end - min(selection[1], view_end)) * config.PIXELS_PER_SEC
+            bottom = config.TOPBAR_HEIGHT + (view_end - max(selection[0], view_start)) * config.PIXELS_PER_SEC
+            overlay = pygame.Surface((config.WINDOW_WIDTH, max(1, int(bottom - top))), pygame.SRCALPHA)
+            overlay.fill((64, 156, 255, 38))
+            self.screen.blit(overlay, (0, int(top)))
+            pygame.draw.line(self.screen, (88, 174, 255), (0, int(top)), (config.WINDOW_WIDTH, int(top)), 2)
+            pygame.draw.line(self.screen, (88, 174, 255), (0, int(bottom)), (config.WINDOW_WIDTH, int(bottom)), 2)
 
         for chord in self.state.chords:
             chord_start = chord[0][1]
@@ -490,7 +559,7 @@ class TrainerApp:
                     border_radius=3,
                 )
 
-        status = "PAUSED (press chord)" if self.state.paused else "PLAYING"
+        status = "PAUSED (Space=start)" if self.timeline_stopped else ("PAUSED (press chord)" if self.state.paused else "PLAYING")
         base_name = os.path.basename(self.state.current_path) if self.state.current_path else "-"
         info_text = (
             f"{status} • {base_name} • Track {self.state.track_idx + 1}/{self.state.track_count or 0} • "
@@ -514,7 +583,7 @@ class TrainerApp:
             (config.WINDOW_WIDTH - 360, config.WINDOW_HEIGHT - config.KEYSTRIP_HEIGHT - 34),
         )
 
-        hint_text = "S=Serum • O=open • ←/→ pan • ,/. zoom • 0 reset • Esc=exit"
+        hint_text = "Wheel=seek • Space=play/pause • drag=loop • S=Serum • O=open • ←/→ pan • ,/. zoom • Esc=exit"
         hint_render = self.font.render(hint_text, True, (120, 138, 158))
         self.screen.blit(hint_render, (16, config.WINDOW_HEIGHT - config.KEYSTRIP_HEIGHT - 32))
 
