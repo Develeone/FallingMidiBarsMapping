@@ -1,3 +1,10 @@
 __pycache__/
 *.egg-info/
 .trainer_state.json
+.venv/
+.venv312/
+.serum-host.pid
+.serum-host.ready
+.serum-state.bin
+*.log
+.runtime/

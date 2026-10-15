@@ -6,6 +6,7 @@ import os
 import mido
 
 from falling_midi_trainer import config
+from falling_midi_trainer.midi.hands import assign_hands
 from falling_midi_trainer.midi.parsing import NoteEntry, group_chords, parse_notes
 from falling_midi_trainer.utils.math_utils import clamp
 
@@ -24,6 +25,7 @@ class GameState:
         self.track_idx = 0
         self.chords: list[list[NoteEntry]] = []
         self.total_length = 0.0
+        self.note_hands: dict[NoteEntry, str] = {}
 
         self.game_time = 0.0
         self.chord_idx = 0
@@ -44,6 +46,7 @@ class GameState:
         self.mid = mid
         self.total_length = total_length
         self.chords = group_chords(notes)
+        self.note_hands = assign_hands(self.current_path, notes)
 
         self.game_time = 0.0
         self.chord_idx = 0

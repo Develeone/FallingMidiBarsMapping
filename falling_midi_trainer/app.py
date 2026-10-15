@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
+from pathlib import Path
+from functools import lru_cache
 import subprocess
 from typing import Dict, Set
 
@@ -36,8 +39,12 @@ class TrainerApp:
         flags = pygame.FULLSCREEN | pygame.SCALED if config.FULLSCREEN else pygame.RESIZABLE
         self.screen = pygame.display.set_mode(target_size, flags)
         config.WINDOW_WIDTH, config.WINDOW_HEIGHT = self.screen.get_size()
+        pygame.display.set_caption("Falling Bars MIDI")
+        self._background = None
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont(None, config.FONT_SIZE)
+        self.hand_font = pygame.font.SysFont("Arial", 16)
+        self.hand_labels = {hand: self.hand_font.render(hand, True, config.HUD_COLOR) for hand in ("Л", "П")}
 
         self.key_count = config.NOTE_MAX - config.NOTE_MIN + 1
         self.keyboard_zoom = 1.0
@@ -51,11 +58,10 @@ class TrainerApp:
         self.tone_cache: Dict[tuple[int, float], pygame.mixer.Sound] = {}
         self._tone_lock = threading.Lock()
         self._pending_tones: Set[tuple[int, float]] = set()
-        self._start_warmup_thread()
         self.note_channels: Dict[int, pygame.mixer.Channel] = {}
         self._midi_queue: SimpleQueue[mido.Message] = SimpleQueue()
 
-        self.internal_enabled = True
+        self.internal_enabled = config.INTERNAL_SYNTH
         self.midi_out_enabled = True
 
         self.midi_inputs = mido.get_input_names()
@@ -109,7 +115,7 @@ class TrainerApp:
     def run(self) -> None:
         running = True
         while running:
-            dt = self.clock.tick(config.FPS) / 1000.0
+            dt = min(0.1, self.clock.tick(config.FPS) / 1000.0)
             self._process_midi()
             running = self._process_events()
             self._update_game_time(dt)
@@ -138,7 +144,8 @@ class TrainerApp:
                     channel.fadeout(25)
 
     def _handle_midi_message(self, msg: mido.Message) -> None:
-        if self.outport is not None and self.midi_out_enabled:
+        if (getattr(self, 'outport', None) is not None and self.midi_out_enabled
+                and self.midi_in_name != self.midi_out_name):
             try:
                 self.outport.send(msg)
             except Exception:
@@ -148,6 +155,10 @@ class TrainerApp:
 
     def _process_events(self) -> bool:
         for event in pygame.event.get():
+            if event.type == pygame.VIDEORESIZE:
+                config.WINDOW_WIDTH, config.WINDOW_HEIGHT = self.screen.get_size()
+                self.key_width = config.WINDOW_WIDTH / self.key_count
+                self._background = None
             if event.type == pygame.QUIT:
                 return False
             if event.type == pygame.MOUSEWHEEL:
@@ -163,7 +174,11 @@ class TrainerApp:
                 if self.reverb_rect.collidepoint(pygame.mouse.get_pos()):
                     self._nudge_reverb(event.y * 0.02)
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_LEFTBRACKET and self.state.track_count:
+                if event.key == pygame.K_s:
+                    self._show_serum()
+                elif event.key == pygame.K_ESCAPE:
+                    return False
+                elif event.key == pygame.K_LEFTBRACKET and self.state.track_count:
                     self.state.previous_track()
                 elif event.key == pygame.K_RIGHTBRACKET and self.state.track_count:
                     self.state.next_track()
@@ -302,10 +317,13 @@ class TrainerApp:
         with self._tone_lock:
             self.tone_cache.clear()
             self._pending_tones.clear()
-        self._start_warmup_thread()
+        if self.internal_enabled:
+            self._start_warmup_thread()
 
     def _toggle_internal_synth(self) -> None:
         self.internal_enabled = not self.internal_enabled
+        if self.internal_enabled:
+            self._start_warmup_thread()
         if not self.internal_enabled:
             for channel in self.note_channels.values():
                 channel.fadeout(25)
@@ -427,16 +445,13 @@ class TrainerApp:
                 pygame.draw.rect(self.screen, color, note_rect, border_radius=6)
 
                 if note % 12 in config.ACCIDENTAL_PITCH_CLASSES:
-                    stripe_step = 7
-                    rect_h = max(1, int(note_rect.h))
-                    rect_w = max(1, int(note_rect.w))
-                    pattern = pygame.Surface((rect_w, rect_h), pygame.SRCALPHA)
-                    pattern.fill((0, 0, 0, 10))
-                    for offset in range(-rect_h, rect_w + rect_h, stripe_step):
-                        start = (offset, rect_h)
-                        end = (offset + rect_h, 0)
-                        pygame.draw.line(pattern, (0, 0, 0, 255), start, end, 6)
+                    pattern = self._accidental_pattern(max(1, note_rect.w), max(1, note_rect.h))
                     self.screen.blit(pattern, note_rect.topleft)
+
+                hand = self.state.note_hands.get((note, start, end, velocity))
+                if hand:
+                    label = self.hand_labels[hand]
+                    self.screen.blit(label, (note_rect.right + 2, note_rect.bottom - label.get_height()))
 
                 pygame.draw.rect(self.screen, config.NOTE_BORDER_COLOR, note_rect, 1, border_radius=6)
 
@@ -485,13 +500,34 @@ class TrainerApp:
             (config.WINDOW_WIDTH - 360, config.WINDOW_HEIGHT - config.KEYSTRIP_HEIGHT - 34),
         )
 
-        hint_text = "O=open • ←/→ pan • ,/. zoom • 0 reset"
+        hint_text = "S=Serum • O=open • ←/→ pan • ,/. zoom • 0 reset • Esc=exit"
         hint_render = self.font.render(hint_text, True, (120, 138, 158))
         self.screen.blit(hint_render, (16, config.WINDOW_HEIGHT - config.KEYSTRIP_HEIGHT - 32))
 
+        if self.state.note_hands:
+            legend = self.hand_font.render("Л — левая рука     П — правая рука", True, config.MUTED_TEXT)
+            self.screen.blit(legend, (16, config.TOPBAR_HEIGHT + 70))
+        if getattr(self, "serum_notice", None):
+            self.screen.blit(self.font.render(self.serum_notice, True, (255, 180, 100)), (16, 160))
         pygame.display.flip()
 
+    @staticmethod
+    @lru_cache(maxsize=256)
+    def _accidental_pattern(width: int, height: int) -> pygame.Surface:
+        pattern = pygame.Surface((width, height), pygame.SRCALPHA)
+        pattern.fill((0, 0, 0, 10))
+        for offset in range(-height, width + height, 7):
+            pygame.draw.line(pattern, (0, 0, 0, 255),
+                             (offset, height), (offset + height, 0), 6)
+        return pattern
+
     def _draw_background(self) -> None:
+        if self._background is None:
+            self._background = self._build_background()
+        self.screen.blit(self._background, (0, 0))
+
+    def _build_background(self) -> pygame.Surface:
+        background = pygame.Surface(self.screen.get_size()).convert()
         top = pygame.Color(*config.BACKGROUND_COLOR_TOP)
         bottom = pygame.Color(*config.BACKGROUND_COLOR_BOTTOM)
         for y in range(config.WINDOW_HEIGHT):
@@ -499,14 +535,23 @@ class TrainerApp:
             r = int(top.r + (bottom.r - top.r) * lerp)
             g = int(top.g + (bottom.g - top.g) * lerp)
             b = int(top.b + (bottom.b - top.b) * lerp)
-            pygame.draw.line(self.screen, (r, g, b), (0, y), (config.WINDOW_WIDTH, y))
+            pygame.draw.line(background, (r, g, b), (0, y), (config.WINDOW_WIDTH, y))
 
         spacing = max(42, int(self.key_width * 1.5))
         grid_color = config.BACKGROUND_GRID
         for x in range(0, config.WINDOW_WIDTH, spacing):
-            pygame.draw.line(self.screen, grid_color, (x, 0), (x, config.WINDOW_HEIGHT))
+            pygame.draw.line(background, grid_color, (x, 0), (x, config.WINDOW_HEIGHT))
         for y in range(config.TOPBAR_HEIGHT + 20, config.WINDOW_HEIGHT, spacing):
-            pygame.draw.line(self.screen, grid_color, (0, y), (config.WINDOW_WIDTH, y))
+            pygame.draw.line(background, grid_color, (0, y), (config.WINDOW_WIDTH, y))
+
+        return background
+
+    def _show_serum(self) -> None:
+        try:
+            pid_path = Path(__file__).resolve().parents[1] / ".serum-host.pid"
+            os.kill(int(pid_path.read_text()), signal.SIGUSR1)
+        except (OSError, ValueError):
+            self.serum_notice = "Serum is not running. Use Start Falling Bars.command"
 
     def _cleanup(self) -> None:
         self.inport.close()

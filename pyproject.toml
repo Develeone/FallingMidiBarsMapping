@@ -7,6 +7,11 @@ requires-python = ">=3.11"
 dependencies = [
   "mido",
   "pygame",
+  "python-rtmidi",
+  "pedalboard>=0.9.26",
+  "sounddevice>=0.5.6",
+  "numpy",
+  "pyobjc-framework-Cocoa; sys_platform == 'darwin'",
 ]
 
 [project.scripts]

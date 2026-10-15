@@ -8,7 +8,7 @@ MIDI_PATH = "song.mid"  # Fallback file if the folder is empty
 STATE_PATH = ".trainer_state.json"
 
 # MIDI device selection
-MIDI_INPUT_NAME_CONTAINS = ""  # First device if empty
+MIDI_INPUT_NAME_CONTAINS = "Popupiano"  # First device if empty
 MIDI_OUTPUT_NAME_CONTAINS = "IAC Driver Bus 1"
 VIRTUAL_OUT = False
 VIRTUAL_OUT_NAME = "Python Trainer Out"
@@ -17,6 +17,7 @@ VIRTUAL_OUT_NAME = "Python Trainer Out"
 NOTE_MIN, NOTE_MAX = 21, 108  # Piano range
 WINDOW_WIDTH, WINDOW_HEIGHT = 1100, 650
 FULLSCREEN = True
+INTERNAL_SYNTH = False
 SAFE_MARGIN = 18
 FPS = 60
 TOPBAR_HEIGHT = 40
