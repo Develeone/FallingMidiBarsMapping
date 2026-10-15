@@ -26,10 +26,30 @@ class GameState:
         self.chords: list[list[NoteEntry]] = []
         self.total_length = 0.0
         self.note_hands: dict[NoteEntry, str] = {}
+        self.enabled_hands = {"Л", "П"}
 
         self.game_time = 0.0
         self.chord_idx = 0
         self.paused = False
+
+    def toggle_hand(self, hand: str) -> bool:
+        """Keep at least one hand selected; return whether selection changed."""
+        if hand not in {'Л', 'П'}:
+            return False
+        if hand in self.enabled_hands:
+            if len(self.enabled_hands) == 1:
+                return False
+            self.enabled_hands.remove(hand)
+        else:
+            self.enabled_hands.add(hand)
+        return True
+
+    def note_enabled(self, entry: NoteEntry) -> bool:
+        hand = self.note_hands.get(entry)
+        return hand is None or hand in self.enabled_hands
+
+    def required_notes(self, chord: list[NoteEntry]) -> set[int]:
+        return {entry[0] for entry in chord if self.note_enabled(entry)}
 
     def load_current(self) -> None:
         """Load the selected MIDI file and active track into the session state."""

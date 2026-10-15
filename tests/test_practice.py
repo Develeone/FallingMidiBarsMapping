@@ -70,5 +70,89 @@ class PracticeTests(unittest.TestCase):
                 app._cleanup()
 
 
+class HandSelectionTests(unittest.TestCase):
+    def setUp(self):
+        self.state = GameState([PATH])
+        self.state.load_current()
+        self.app = TrainerApp.__new__(TrainerApp)
+        self.app.state = self.state
+        self.app.pressed = set()
+
+    def test_one_hand_chord_does_not_require_other_hand(self):
+        self.state.toggle_hand('П')
+        self.app.pressed = {44}
+        self.app._update_game_time(0.01)
+        self.assertEqual(self.state.chord_idx, 1)
+        self.assertFalse(self.state.paused)
+        self.state.load_current()
+        self.state.toggle_hand('П')  # Both hands again.
+        self.state.toggle_hand('Л')  # Right only.
+        self.app.pressed = {72}
+        self.app._update_game_time(0.01)
+        self.assertEqual(self.state.chord_idx, 1)
+        self.assertFalse(self.state.paused)
+
+    def test_both_hands_still_require_both_notes(self):
+        self.app.pressed = {44}
+        self.app._update_game_time(0.01)
+        self.assertTrue(self.state.paused)
+        self.assertEqual(self.state.chord_idx, 0)
+        self.app.pressed.add(72)
+        self.app._update_game_time(0.01)
+        self.assertFalse(self.state.paused)
+
+    def test_other_hand_only_chord_advances_without_press(self):
+        self.state.toggle_hand('Л')
+        self.state.chord_idx = 1  # G# accompaniment phrase, left hand only.
+        self.state.game_time = self.state.chords[1][0][1]
+        with patch('falling_midi_trainer.config.STRICT', True):
+            self.app._update_game_time(0.01)
+        self.assertEqual(self.state.chord_idx, 2)
+        self.assertFalse(self.state.paused)
+        self.assertFalse(self.state.toggle_hand('П'))
+        self.assertEqual(self.state.enabled_hands, {'П'})
+
+    def test_selection_preserves_view_and_other_saved_settings(self):
+        import tempfile, json
+        from pathlib import Path
+        self.app.keyboard_zoom = 1.48
+        self.app.keyboard_pan_x = -504.0
+        self.state.toggle_hand('Л')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'state.json'
+            path.write_text(json.dumps({'custom_setting': 123}))
+            with patch('falling_midi_trainer.config.STATE_PATH', str(path)):
+                self.app._save_ui_state()
+                saved = json.loads(path.read_text())
+                self.assertEqual(saved['keyboard_zoom'], 1.48)
+                self.assertEqual(saved['keyboard_pan_x'], -504.0)
+                self.assertEqual(saved['custom_setting'], 123)
+                self.assertEqual(saved['enabled_hands'], ['П'])
+                self.app._load_ui_state()
+                self.assertEqual(self.app._saved_hands, {'П'})
+
+    def test_disabled_note_is_twenty_percent_alpha(self):
+        pygame.init()
+        try:
+            self.app.screen = pygame.Surface((100, 100))
+            self.app.hand_labels = {}
+            background = (20, 30, 40)
+            rect = pygame.Rect(10, 10, 20, 50)
+            self.app.screen.fill(background)
+            self.app._draw_note_bar(rect, 60, (255, 0, 0), None, True)
+            self.assertEqual(self.app.screen.get_at((20, 30))[:3], (255, 0, 0))
+            self.app.screen.fill(background)
+            self.app._draw_note_bar(rect, 60, (255, 0, 0), None, False)
+            reference = pygame.Surface((1, 1))
+            reference.fill(background)
+            overlay = pygame.Surface((1, 1), pygame.SRCALPHA)
+            overlay.fill((255, 0, 0, 255))
+            overlay.set_alpha(51)
+            reference.blit(overlay, (0, 0))
+            self.assertEqual(self.app.screen.get_at((20, 30)), reference.get_at((0, 0)))
+        finally:
+            pygame.quit()
+
+
 if __name__ == '__main__':
     unittest.main()

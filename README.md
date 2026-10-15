@@ -15,6 +15,9 @@ mean left/right hand. Original pitch colors, stripes, zoom, and pan remain uncha
 The MIDI merges both hands; `midi/hands.py` defines a suggested practice
 assignment by phrase, including the lower melody in the middle and the
 crossing accompaniment near the ending. Notes and timing are unchanged.
+The two hand buttons select both hands, left only, or right only. A blue outline
+means enabled. Disabled-hand notes stay visible at 20% opacity and are not
+required to advance. Selection is saved alongside the existing zoom and pan.
 Other MIDI files do not receive this arrangement-specific annotation.
 
 Serum's selected sound is saved locally on closing its editor or ending the

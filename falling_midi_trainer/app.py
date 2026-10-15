@@ -24,6 +24,7 @@ from falling_midi_trainer.midi.files import list_midi_files
 from falling_midi_trainer.midi.parsing import group_chords, parse_notes
 from falling_midi_trainer.midi.ports import pick_midi_input, pick_midi_output
 from falling_midi_trainer.ui.topbar import draw_topbar
+from falling_midi_trainer.ui.hands import draw_hand_buttons, hand_buttons
 from falling_midi_trainer.utils.math_utils import clamp
 
 
@@ -50,6 +51,7 @@ class TrainerApp:
         self.keyboard_zoom = 1.0
         self.keyboard_pan_x = 0.0
         self.key_width = config.WINDOW_WIDTH / self.key_count
+        self._saved_hands = {"Л", "П"}
         self._load_ui_state()
 
         self.pressed: Set[int] = set()
@@ -80,6 +82,7 @@ class TrainerApp:
 
         files = list_midi_files(config.MIDI_DIR)
         self.state = GameState(files)
+        self.state.enabled_hands = self._saved_hands
         self._initial_load()
 
     def _setup_midi_out(self) -> None:
@@ -201,6 +204,13 @@ class TrainerApp:
                     self.keyboard_pan_x = 0.0
                     self._save_ui_state()
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if self.state.note_hands:
+                    clicked_hand = next((hand for hand, rect in hand_buttons().items()
+                                         if rect.collidepoint(event.pos)), None)
+                    if clicked_hand:
+                        if self.state.toggle_hand(clicked_hand):
+                            self._save_ui_state()
+                        continue
                 if self._handle_topbar_click(event.pos):
                     continue
         return True
@@ -297,6 +307,8 @@ class TrainerApp:
                 data = json.load(f)
             self.keyboard_zoom = float(data.get('keyboard_zoom', 1.0))
             self.keyboard_pan_x = float(data.get('keyboard_pan_x', 0.0))
+            selected = set(data.get('enabled_hands', ['Л', 'П'])) & {'Л', 'П'}
+            self._saved_hands = selected or {'Л', 'П'}
             self.keyboard_zoom = clamp(self.keyboard_zoom, config.KEYBOARD_ZOOM_MIN, config.KEYBOARD_ZOOM_MAX)
         except Exception:
             self.keyboard_zoom = 1.0
@@ -304,12 +316,20 @@ class TrainerApp:
 
     def _save_ui_state(self) -> None:
         try:
-            with open(config.STATE_PATH, 'w', encoding='utf-8') as f:
-                json.dump({
-                    'keyboard_zoom': self.keyboard_zoom,
-                    'keyboard_pan_x': self.keyboard_pan_x,
-                }, f)
-        except Exception:
+            path = Path(config.STATE_PATH)
+            try:
+                data = json.loads(path.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                data = {}
+            data.update({
+                'keyboard_zoom': self.keyboard_zoom,
+                'keyboard_pan_x': self.keyboard_pan_x,
+                'enabled_hands': sorted(self.state.enabled_hands),
+            })
+            temporary = path.with_suffix(path.suffix + '.tmp')
+            temporary.write_text(json.dumps(data), encoding='utf-8')
+            os.replace(temporary, path)
+        except (OSError, ValueError):
             pass
 
     def _set_reverb_mix(self, value: float) -> None:
@@ -363,14 +383,16 @@ class TrainerApp:
     def _update_game_time(self, dt: float) -> None:
         if self.state.chord_idx < len(self.state.chords):
             current_chord = self.state.chords[self.state.chord_idx]
-            required_notes = {note for (note, _, _, _) in current_chord}
+            required_notes = self.state.required_notes(current_chord)
             required_time = current_chord[0][1]
         else:
             required_notes = set()
             required_time = self.state.total_length
 
         if self.state.chord_idx < len(self.state.chords) and self.state.game_time >= required_time:
-            if config.STRICT:
+            if not required_notes:
+                chord_ok = True
+            elif config.STRICT:
                 chord_ok = self.pressed == required_notes
             else:
                 chord_ok = required_notes.issubset(self.pressed)
@@ -442,18 +464,10 @@ class TrainerApp:
                 x_offset = (scaled_key_width - width) * 0.5
 
                 note_rect = pygame.Rect(x + x_offset, y_top, width - 1, height)
-                pygame.draw.rect(self.screen, color, note_rect, border_radius=6)
-
-                if note % 12 in config.ACCIDENTAL_PITCH_CLASSES:
-                    pattern = self._accidental_pattern(max(1, note_rect.w), max(1, note_rect.h))
-                    self.screen.blit(pattern, note_rect.topleft)
-
-                hand = self.state.note_hands.get((note, start, end, velocity))
-                if hand:
-                    label = self.hand_labels[hand]
-                    self.screen.blit(label, (note_rect.right + 2, note_rect.bottom - label.get_height()))
-
-                pygame.draw.rect(self.screen, config.NOTE_BORDER_COLOR, note_rect, 1, border_radius=6)
+                entry = (note, start, end, velocity)
+                self._draw_note_bar(note_rect, note, color,
+                                    self.state.note_hands.get(entry),
+                                    self.state.note_enabled(entry))
 
         hit_line_y = (config.WINDOW_HEIGHT - config.KEYSTRIP_HEIGHT) - 2
         pygame.draw.line(
@@ -487,7 +501,7 @@ class TrainerApp:
         self.screen.blit(self.font.render(info_text, True, config.HUD_COLOR), (16, config.TOPBAR_HEIGHT + 12))
 
         if self.state.chord_idx < len(self.state.chords):
-            required_notes = sorted({note for (note, _, _, _) in self.state.chords[self.state.chord_idx]})
+            required_notes = sorted(self.state.required_notes(self.state.chords[self.state.chord_idx]))
             self.screen.blit(
                 self.font.render(f"Next chord: {required_notes}", True, config.MUTED_TEXT),
                 (16, config.TOPBAR_HEIGHT + 38),
@@ -505,11 +519,30 @@ class TrainerApp:
         self.screen.blit(hint_render, (16, config.WINDOW_HEIGHT - config.KEYSTRIP_HEIGHT - 32))
 
         if self.state.note_hands:
-            legend = self.hand_font.render("Л — левая рука     П — правая рука", True, config.MUTED_TEXT)
-            self.screen.blit(legend, (16, config.TOPBAR_HEIGHT + 70))
+            draw_hand_buttons(self.screen, self.hand_font, self.state.enabled_hands)
         if getattr(self, "serum_notice", None):
             self.screen.blit(self.font.render(self.serum_notice, True, (255, 180, 100)), (16, 160))
         pygame.display.flip()
+
+    def _draw_note_bar(self, rect, note, color, hand, enabled):
+        label = self.hand_labels.get(hand)
+        if enabled:
+            target, bar = self.screen, rect
+        else:
+            label_height = label.get_height() if label else 0
+            pad = max(0, label_height - rect.h)
+            target = pygame.Surface((max(1, rect.w) + (label.get_width() + 2 if label else 0),
+                                     max(1, rect.h) + pad), pygame.SRCALPHA)
+            bar = pygame.Rect(0, pad, rect.w, rect.h)
+        pygame.draw.rect(target, color, bar, border_radius=6)
+        if note % 12 in config.ACCIDENTAL_PITCH_CLASSES:
+            target.blit(self._accidental_pattern(max(1, bar.w), max(1, bar.h)), bar.topleft)
+        if label:
+            target.blit(label, (bar.right + 2, bar.bottom - label.get_height()))
+        pygame.draw.rect(target, config.NOTE_BORDER_COLOR, bar, 1, border_radius=6)
+        if not enabled:
+            target.set_alpha(51)  # 20% of 255, including stripes, border, and label.
+            self.screen.blit(target, (rect.x, rect.y - bar.y))
 
     @staticmethod
     @lru_cache(maxsize=256)
